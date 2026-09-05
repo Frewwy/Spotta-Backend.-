@@ -1,0 +1,58 @@
+# SPOTTA backend
+
+Logs inspection outcomes from the SPOTTA tools and serves real, aggregate
+"does PASS actually mean anything" stats across everyone using the tool —
+not just one browser tab.
+
+## What this is (and isn't) yet
+
+- Logs every PASS/CAUTION/FAIL result, with score and market cap.
+- Serves aggregate stats (pass rates, held-rate at 15min/60min checkpoints).
+- Tier resolution is stubbed — every request is currently "free tier."
+  There's no payment enforcement yet. See the comment in `server.js` above
+  `resolveTier()` for exactly where to wire in a real check once you've
+  picked a payment processor.
+
+## 1. Set up the database (Neon — free, no card required)
+
+1. Go to neon.tech, sign up, create a project.
+2. Copy the connection string it gives you (starts with `postgresql://`).
+3. Run the schema against it — paste schema.sql into Neon's SQL Editor.
+
+Supabase works the same way if you'd rather use that instead.
+
+## 2. Deploy to Render (free, no card required)
+
+1. Push this folder to a GitHub repo.
+2. On render.com: New → Web Service → connect the repo.
+3. Build command: `npm install`
+4. Start command: `npm start`
+5. Add an environment variable: `DATABASE_URL` = the connection string from step 1.
+6. Deploy. Render gives you a URL like `https://spotta-backend.onrender.com`.
+
+## 3. Point the frontend at it
+
+In each SPOTTA tool's Settings panel, paste the Render URL into the
+"Backend API URL" field.
+
+## API reference
+
+- `POST /api/inspections`
+- `POST /api/inspections/:id/checkpoint`
+- `GET /api/stats`
+- `GET /health`
+
+## 4. (Optional) Telegram group-chat scanner bot
+
+1. Message @BotFather, run `/newbot`. Copy the token.
+2. Run `/setprivacy`, set to **Disabled**.
+3. Add `TELEGRAM_BOT_TOKEN` to Render environment variables.
+4. Add the bot to your group.
+5. Redeploy.
+
+## 5. Honeypot & liquidity-lock detection (GoPlus Security)
+
+Uses GoPlus Security's free Token Security API for honeypot and liquidity-lock
+checks. Field names are confirmed from official docs; the response wrapper
+shape is not independently confirmed — falls back to "unavailable" rather
+than guessing wrong.
