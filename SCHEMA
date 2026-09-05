@@ -1,0 +1,41 @@
+-- SPOTTA backend schema. Run this once against your Postgres database (Neon/Supabase).
+
+CREATE TABLE IF NOT EXISTS inspections (
+  id BIGSERIAL PRIMARY KEY,
+  tool TEXT NOT NULL,                 -- 'pumpfun' or 'dex'
+  chain TEXT,                         -- 'solana', 'robinhood', 'bsc', 'ethereum', etc. (dex tool only)
+  token_address TEXT NOT NULL,
+  token_symbol TEXT,
+  outcome TEXT NOT NULL,              -- 'pass' | 'caution' | 'fail'
+  score INTEGER,                      -- 0-100, nullable
+  mcap_at_pass NUMERIC,               -- market cap (USD) at the moment of this result, if known
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_inspections_tool ON inspections(tool);
+CREATE INDEX IF NOT EXISTS idx_inspections_outcome ON inspections(outcome);
+CREATE INDEX IF NOT EXISTS idx_inspections_created_at ON inspections(created_at);
+
+-- Follow-up checkpoints for tokens that passed — did the result actually hold up?
+-- A separate table (rather than columns on inspections) because a token can get
+-- multiple checkpoints (15min, 1hr, etc.) reported at different times.
+CREATE TABLE IF NOT EXISTS pass_checkpoints (
+  id BIGSERIAL PRIMARY KEY,
+  inspection_id BIGINT REFERENCES inspections(id) ON DELETE CASCADE,
+  checkpoint_minutes INTEGER NOT NULL,   -- 15, 60, etc.
+  held BOOLEAN NOT NULL,                 -- true = still >= 70% of pass-time value
+  mcap_at_checkpoint NUMERIC,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_checkpoints_inspection ON pass_checkpoints(inspection_id);
+
+-- Stub for future tier/auth system. Not enforced anywhere yet — every request is
+-- currently treated as free tier (see server.js). Fill this in once a payment
+-- processor is wired up.
+CREATE TABLE IF NOT EXISTS api_keys (
+  id BIGSERIAL PRIMARY KEY,
+  key TEXT UNIQUE NOT NULL,
+  tier TEXT NOT NULL DEFAULT 'free',   -- 'free' | 'pro'
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
