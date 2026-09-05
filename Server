@@ -1,0 +1,119 @@
+require('dotenv').config();
+const express = require('express');
+const cors = require('cors');
+const { Pool } = require('pg');
+const { startTelegramBot } = require('./telegram-bot');
+
+const app = express();
+app.use(cors()); // open by default; tighten to your domain(s) once you have a real frontend URL
+app.use(express.json());
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.DATABASE_URL?.includes('localhost') ? false : { rejectUnauthorized: false }
+});
+
+// --- Tier stub -------------------------------------------------------------
+// Every request is currently treated as free tier. When you add a payment
+// processor: look up req.header('x-api-key') against the api_keys table,
+// attach { tier: 'free'|'pro' } to req, and gate routes/fields below on it.
+// Nothing downstream depends on this changing shape, so wiring it in later
+// won't require touching the routes themselves.
+function resolveTier(req, res, next) {
+  req.tier = 'free';
+  next();
+}
+app.use(resolveTier);
+
+// --- Log an inspection result ----------------------------------------------
+// Called by the frontend the moment a token gets a PASS/CAUTION/FAIL verdict.
+app.post('/api/inspections', async (req, res) => {
+  const { tool, chain, tokenAddress, tokenSymbol, outcome, score, mcapAtPass } = req.body || {};
+  if (!tool || !tokenAddress || !outcome) {
+    return res.status(400).json({ error: 'tool, tokenAddress, and outcome are required' });
+  }
+  if (!['pass', 'caution', 'fail'].includes(outcome)) {
+    return res.status(400).json({ error: 'outcome must be pass, caution, or fail' });
+  }
+  try {
+    const result = await pool.query(
+      `INSERT INTO inspections (tool, chain, token_address, token_symbol, outcome, score, mcap_at_pass)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+      [tool, chain || null, tokenAddress, tokenSymbol || null, outcome, score ?? null, mcapAtPass ?? null]
+    );
+    res.status(201).json({ id: result.rows[0].id });
+  } catch (e) {
+    console.error('Insert failed:', e.message);
+    res.status(500).json({ error: 'failed to log inspection' });
+  }
+});
+
+// --- Report a follow-up checkpoint (did a PASS actually hold up?) ----------
+app.post('/api/inspections/:id/checkpoint', async (req, res) => {
+  const { id } = req.params;
+  const { checkpointMinutes, held, mcapAtCheckpoint } = req.body || {};
+  if (typeof checkpointMinutes !== 'number' || typeof held !== 'boolean') {
+    return res.status(400).json({ error: 'checkpointMinutes (number) and held (boolean) are required' });
+  }
+  try {
+    await pool.query(
+      `INSERT INTO pass_checkpoints (inspection_id, checkpoint_minutes, held, mcap_at_checkpoint)
+       VALUES ($1,$2,$3,$4)`,
+      [id, checkpointMinutes, held, mcapAtCheckpoint ?? null]
+    );
+    res.status(201).json({ ok: true });
+  } catch (e) {
+    console.error('Checkpoint insert failed:', e.message);
+    res.status(500).json({ error: 'failed to log checkpoint' });
+  }
+});
+
+// --- Aggregate track-record stats -------------------------------------------
+// This is the real, honest "does PASS mean anything" number — computed across
+// every user of the tool, not just one session in one browser tab.
+app.get('/api/stats', async (req, res) => {
+  try {
+    const totals = await pool.query(`
+      SELECT tool, outcome, COUNT(*)::int AS count
+      FROM inspections
+      GROUP BY tool, outcome
+    `);
+
+    const heldRates = await pool.query(`
+      SELECT checkpoint_minutes,
+             COUNT(*) FILTER (WHERE held)::int AS held_count,
+             COUNT(*)::int AS total_count
+      FROM pass_checkpoints
+      GROUP BY checkpoint_minutes
+      ORDER BY checkpoint_minutes
+    `);
+
+    const recentPasses = await pool.query(`
+      SELECT tool, chain, token_symbol, score, created_at
+      FROM inspections
+      WHERE outcome = 'pass'
+      ORDER BY created_at DESC
+      LIMIT 20
+    `);
+
+    res.json({
+      totals: totals.rows,
+      heldRates: heldRates.rows.map(r => ({
+        checkpointMinutes: r.checkpoint_minutes,
+        heldPct: r.total_count ? Math.round((r.held_count / r.total_count) * 100) : null,
+        sampleSize: r.total_count
+      })),
+      recentPasses: recentPasses.rows
+    });
+  } catch (e) {
+    console.error('Stats query failed:', e.message);
+    res.status(500).json({ error: 'failed to compute stats' });
+  }
+});
+
+app.get('/health', (req, res) => res.json({ ok: true }));
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`SPOTTA backend listening on port ${PORT}`));
+
+startTelegramBot(pool);
